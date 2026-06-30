@@ -86,6 +86,7 @@ export class ConcurrencyQueue {
 export class ConcurrencyManager {
   private globalQueue: ConcurrencyQueue;
   private modelQueues = new Map<string, ConcurrencyQueue>();
+  private tokenQueues = new Map<string, ConcurrencyQueue>();
 
   constructor(globalLimit: number, private readonly logger?: SimpleLogger) {
     this.globalQueue = new ConcurrencyQueue(globalLimit, 'global', logger);
@@ -101,36 +102,67 @@ export class ConcurrencyManager {
     return queue;
   }
 
+  /** Ensure a token queue exists with the given limit. */
+  private getOrCreateTokenQueue(tokenName: string, limit: number): ConcurrencyQueue {
+    let queue = this.tokenQueues.get(tokenName);
+    if (!queue) {
+      queue = new ConcurrencyQueue(limit, `token:${tokenName}`, this.logger);
+      this.tokenQueues.set(tokenName, queue);
+    }
+    return queue;
+  }
+
   /**
-   * Acquire both global and model-level slots.
-   * Order: global first (prevents model-queue starvation under contention).
+   * Acquire global, model-level, and token-level slots.
+   * Order: token → model → global (prevents starvation under contention).
+   * All params except modelAlias are optional.
    */
-  async acquire(modelAlias: string, modelLimit?: number): Promise<() => void> {
-    // If model-specific limit is set, acquire that too.
+  async acquire(
+    modelAlias: string,
+    modelLimit?: number,
+    tokenName?: string,
+    tokenLimit?: number,
+  ): Promise<() => void> {
+    let tokenQueue: ConcurrencyQueue | undefined;
     let modelQueue: ConcurrencyQueue | undefined;
+
+    if (tokenName && tokenLimit !== undefined) {
+      tokenQueue = this.getOrCreateTokenQueue(tokenName, tokenLimit);
+      await tokenQueue.acquire();
+    }
     if (modelLimit !== undefined) {
       modelQueue = this.getOrCreateModelQueue(modelAlias, modelLimit);
       await modelQueue.acquire();
     }
     await this.globalQueue.acquire();
 
-    // Return a release function that frees both slots.
     return () => {
       this.globalQueue.release();
       modelQueue?.release();
+      tokenQueue?.release();
     };
   }
 
   /** Stats for observability. */
-  stats(): { globalActive: number; globalQueued: number; models: Record<string, { active: number; queued: number }> } {
+  stats(): {
+    globalActive: number;
+    globalQueued: number;
+    models: Record<string, { active: number; queued: number }>;
+    tokens: Record<string, { active: number; queued: number }>;
+  } {
     const models: Record<string, { active: number; queued: number }> = {};
     for (const [alias, queue] of Array.from(this.modelQueues.entries())) {
       models[alias] = { active: queue.activeCount, queued: queue.queuedCount };
+    }
+    const tokens: Record<string, { active: number; queued: number }> = {};
+    for (const [name, queue] of Array.from(this.tokenQueues.entries())) {
+      tokens[name] = { active: queue.activeCount, queued: queue.queuedCount };
     }
     return {
       globalActive: this.globalQueue.activeCount,
       globalQueued: this.globalQueue.queuedCount,
       models,
+      tokens,
     };
   }
 }

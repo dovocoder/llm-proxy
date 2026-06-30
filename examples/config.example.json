@@ -58,5 +58,23 @@
         "X-Model-Tier": "premium"
       }
     }
+  ],
+  "tokens": [
+    {
+      "token": "${ADMIN_TOKEN}",
+      "name": "admin"
+    },
+    {
+      "token": "${CHATBOT_TOKEN}",
+      "name": "chatbot",
+      "maxConcurrent": 3,
+      "allowedModels": ["gpt-4o", "gpt-4o-mini"]
+    },
+    {
+      "token": "${INTERNAL_CLI_TOKEN}",
+      "name": "internal-cli",
+      "maxConcurrent": 1,
+      "allowedModels": ["gpt-4o"]
+    }
   ]
 }

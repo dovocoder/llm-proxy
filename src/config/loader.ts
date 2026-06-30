@@ -22,12 +22,20 @@ const modelRouteSchema = z.object({
   headers: z.record(z.string()).optional(),
 });
 
+const tokenSchema = z.object({
+  token: z.string().min(1),
+  name: z.string().min(1),
+  maxConcurrent: z.number().int().positive().optional(),
+  allowedModels: z.array(z.string().min(1)).optional(),
+});
+
 export const proxyConfigSchema = z.object({
   port: z.number().int().min(0).default(3000),
   authKey: z.string().optional(),
   globalMaxConcurrent: z.number().int().positive().default(10),
   providers: z.array(providerSchema).min(1),
   models: z.array(modelRouteSchema).min(1),
+  tokens: z.array(tokenSchema).optional(),
 });
 
 /**

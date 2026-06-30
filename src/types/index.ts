@@ -39,6 +39,18 @@ export interface ModelRouteConfig {
   headers?: Record<string, string>;
 }
 
+/** An API token — per-client credentials with optional concurrency and model restrictions. */
+export interface ApiTokenConfig {
+  /** The token string clients send via `Authorization: Bearer <token>`. */
+  token: string;
+  /** Human-readable name for this token. */
+  name: string;
+  /** Max concurrent requests for this token. If unset, no per-token limit. */
+  maxConcurrent?: number;
+  /** If set, this token can only access these model aliases. Empty/unset = all models. */
+  allowedModels?: string[];
+}
+
 /** Top-level proxy configuration. */
 export interface ProxyConfig {
   /** Server listen port. */
@@ -51,6 +63,8 @@ export interface ProxyConfig {
   providers: ProviderConfig[];
   /** List of model alias routes. */
   models: ModelRouteConfig[];
+  /** Optional API tokens for per-client auth, concurrency, and model access control. */
+  tokens?: ApiTokenConfig[];
 }
 
 /** OpenAI message format. */

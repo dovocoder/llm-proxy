@@ -2,49 +2,112 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { RouterWithProviders } from '../router/index.js';
 import { ConcurrencyManager, type SimpleLogger } from '../queue/concurrency.js';
 import { ProviderAdapter } from '../providers/adapter.js';
-import type { ProxyConfig } from '../types/index.js';
+import { TokenManager } from '../auth/token-manager.js';
+import type { ApiTokenConfig, ProxyConfig } from '../types/index.js';
 import type { AnthropicRequest, OpenAIChatRequest } from '../providers/converters.js';
 
 export interface RouteContext {
   config: ProxyConfig;
   router: RouterWithProviders;
   concurrency: ConcurrencyManager;
+  tokenManager: TokenManager;
 }
 
-/** Authentication hook — checks Authorization header if authKey is configured. */
-function authHook(config: ProxyConfig) {
+/** Extract bearer token from Authorization header. */
+function extractBearerToken(request: FastifyRequest): string | undefined {
+  const auth = request.headers.authorization;
+  return auth?.startsWith('Bearer ') ? auth.slice(7) : undefined;
+}
+
+/** Authentication hook — validates tokens via TokenManager. */
+function authHook(ctx: RouteContext) {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
-    if (!config.authKey) return;
+    if (!ctx.tokenManager.authEnabled) return;
 
-    const auth = request.headers.authorization;
-    const token = auth?.startsWith('Bearer ') ? auth.slice(7) : undefined;
-
-    if (token !== config.authKey) {
+    const rawToken = extractBearerToken(request);
+    if (!rawToken) {
       await reply.status(401).send({
-        error: {
-          message: 'Invalid or missing API key',
-          type: 'authentication_error',
-        },
+        error: { message: 'Missing Authorization header', type: 'authentication_error' },
+      });
+      return;
+    }
+
+    const tokenConfig = ctx.tokenManager.authenticate(rawToken);
+    if (!tokenConfig) {
+      await reply.status(401).send({
+        error: { message: 'Invalid API key', type: 'authentication_error' },
       });
     }
   };
 }
 
+/** Resolve and validate a model request, including token access control. Returns null + sends error reply on failure. */
+async function resolveModel(
+  ctx: RouteContext,
+  request: FastifyRequest,
+  reply: FastifyReply,
+  modelAlias: string,
+): Promise<{ resolved: ReturnType<RouterWithProviders['resolve']> } | null> {
+  // Check model exists.
+  try {
+    const resolved = ctx.router.resolve(modelAlias);
+    // Check token has access to this model.
+    const rawToken = extractBearerToken(request);
+    if (rawToken && ctx.tokenManager.authEnabled) {
+      const tokenConfig = ctx.tokenManager.authenticate(rawToken);
+      if (tokenConfig && !ctx.tokenManager.canAccessModel(tokenConfig, modelAlias)) {
+        await reply.status(403).send({
+          error: {
+            message: `Token "${tokenConfig.name}" is not allowed to access model "${modelAlias}"`,
+            type: 'forbidden_error',
+          },
+        });
+        return null;
+      }
+    }
+    return { resolved };
+  } catch (err) {
+    await reply.status(404).send({
+      error: {
+        message: err instanceof Error ? err.message : 'Model not found',
+        type: 'not_found_error',
+      },
+    });
+    return null;
+  }
+}
+
+/** Get the token config for the current request (if auth is enabled). */
+function getRequestToken(ctx: RouteContext, request: FastifyRequest): ApiTokenConfig | null {
+  if (!ctx.tokenManager.authEnabled) return null;
+  const rawToken = extractBearerToken(request);
+  if (!rawToken) return null;
+  return ctx.tokenManager.authenticate(rawToken);
+}
+
 /** Build all API routes. */
 export function buildRoutes(app: FastifyInstance, ctx: RouteContext): void {
-  app.addHook('onRequest', authHook(ctx.config));
+  app.addHook('onRequest', authHook(ctx));
 
   // ─── GET /v1/models ──────────────────────────────────────────────────
 
-  app.get('/v1/models', async (_req: FastifyRequest, reply: FastifyReply) => {
-    const models = ctx.router.listModels().map((id) => ({
+  app.get('/v1/models', async (request: FastifyRequest, reply: FastifyReply) => {
+    const allModels = ctx.router.listModels();
+    const tokenConfig = getRequestToken(ctx, request);
+
+    // Filter models by token access.
+    const visibleModels = tokenConfig
+      ? ctx.tokenManager.accessibleModels(tokenConfig, allModels)
+      : allModels;
+
+    const data = visibleModels.map((id) => ({
       id,
       object: 'model' as const,
       created: Math.floor(Date.now() / 1000),
       owned_by: 'llm-proxy',
     }));
 
-    return reply.send({ object: 'list', data: models });
+    return reply.send({ object: 'list', data });
   });
 
   // ─── POST /v1/chat/completions (OpenAI format) ───────────────────────
@@ -58,29 +121,23 @@ export function buildRoutes(app: FastifyInstance, ctx: RouteContext): void {
       });
     }
 
-    let resolved;
-    try {
-      resolved = ctx.router.resolve(body.model);
-    } catch (err) {
-      return reply.status(404).send({
-        error: {
-          message: err instanceof Error ? err.message : 'Model not found',
-          type: 'not_found_error',
-        },
-      });
-    }
+    const result = await resolveModel(ctx, request, reply, body.model);
+    if (!result) return;
 
-    const { provider, modelRoute } = resolved;
+    const { provider, modelRoute } = result.resolved;
     const log = request.log as unknown as SimpleLogger;
     const adapter = new ProviderAdapter(provider, log);
+    const tokenConfig = getRequestToken(ctx, request);
 
     // Replace model alias with upstream model name.
     const upstreamBody: OpenAIChatRequest = { ...body, model: modelRoute.upstreamModel };
 
-    // Acquire concurrency slots (waits if full, never rejects).
+    // Acquire concurrency slots: global + model + token (waits if full, never rejects).
     const release = await ctx.concurrency.acquire(
       modelRoute.alias,
       modelRoute.maxConcurrent,
+      tokenConfig?.name,
+      tokenConfig?.maxConcurrent,
     );
 
     try {
@@ -107,21 +164,13 @@ export function buildRoutes(app: FastifyInstance, ctx: RouteContext): void {
       });
     }
 
-    let resolved;
-    try {
-      resolved = ctx.router.resolve(body.model);
-    } catch (err) {
-      return reply.status(404).send({
-        error: {
-          message: err instanceof Error ? err.message : 'Model not found',
-          type: 'not_found_error',
-        },
-      });
-    }
+    const result = await resolveModel(ctx, request, reply, body.model);
+    if (!result) return;
 
-    const { provider, modelRoute } = resolved;
+    const { provider, modelRoute } = result.resolved;
     const log = request.log as unknown as SimpleLogger;
     const adapter = new ProviderAdapter(provider, log);
+    const tokenConfig = getRequestToken(ctx, request);
 
     // Replace model alias with upstream model name.
     const upstreamBody: AnthropicRequest = { ...body, model: modelRoute.upstreamModel };
@@ -129,6 +178,8 @@ export function buildRoutes(app: FastifyInstance, ctx: RouteContext): void {
     const release = await ctx.concurrency.acquire(
       modelRoute.alias,
       modelRoute.maxConcurrent,
+      tokenConfig?.name,
+      tokenConfig?.maxConcurrent,
     );
 
     try {

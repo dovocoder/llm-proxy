@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import { loadConfig } from './config/loader.js';
 import { RouterWithProviders } from './router/index.js';
 import { ConcurrencyManager, type SimpleLogger } from './queue/concurrency.js';
+import { TokenManager } from './auth/token-manager.js';
 import { buildRoutes, type RouteContext } from './routes/index.js';
 
 export async function createServer(configPath: string): Promise<FastifyInstance> {
@@ -23,6 +24,7 @@ export async function createServer(configPath: string): Promise<FastifyInstance>
       config.globalMaxConcurrent,
       app.log as unknown as SimpleLogger,
     ),
+    tokenManager: new TokenManager(config),
   };
 
   buildRoutes(app, ctx);

@@ -125,4 +125,55 @@ describe('ConcurrencyManager', () => {
     r2();
     expect(manager.stats().globalActive).toBe(0);
   });
+
+  it('respects per-token concurrency limit', async () => {
+    const manager = new ConcurrencyManager(100, undefined);
+
+    const r1 = await manager.acquire('m1', undefined, 'client-a', 2);
+    const r2 = await manager.acquire('m1', undefined, 'client-a', 2);
+
+    // Third request from same token should queue.
+    let resolved = false;
+    const acquirePromise = manager.acquire('m1', undefined, 'client-a', 2).then((r) => {
+      resolved = true;
+      return r;
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(resolved).toBe(false);
+
+    r1();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(resolved).toBe(true);
+
+    const r3 = await acquirePromise;
+    r2();
+    r3();
+  });
+
+  it('different tokens have independent concurrency limits', async () => {
+    const manager = new ConcurrencyManager(100, undefined);
+
+    // Token A fills its limit.
+    const rA1 = await manager.acquire('m1', undefined, 'token-a', 1);
+
+    // Token B can still acquire (different token, different limit).
+    const rB1 = await manager.acquire('m1', undefined, 'token-b', 1);
+
+    expect(manager.stats().tokens['token-a'].active).toBe(1);
+    expect(manager.stats().tokens['token-b'].active).toBe(1);
+
+    rA1();
+    rB1();
+  });
+
+  it('token concurrency stats appear after use', async () => {
+    const manager = new ConcurrencyManager(100, undefined);
+    const r = await manager.acquire('m1', undefined, 'my-client', 5);
+    const stats = manager.stats();
+    expect(stats.tokens['my-client']).toBeDefined();
+    expect(stats.tokens['my-client'].active).toBe(1);
+    r();
+    expect(manager.stats().tokens['my-client'].active).toBe(0);
+  });
 });

@@ -10,8 +10,9 @@ A self-hosted LLM API proxy that unifies access to multiple upstream providers (
   - Send OpenAI `POST /v1/chat/completions` requests to an Anthropic provider
   - Send Anthropic `POST /v1/messages` requests to an OpenAI provider
 - **Custom headers** — Attach per-provider and per-model headers for custom model endpoints
-- **Concurrency limits with queueing** — Set global and per-model concurrency limits. When full, requests **wait in queue** rather than being rejected
-- **API key authentication** — Optional proxy-level auth key
+- **Concurrency limits with queueing** — Set global, per-model, and per-token concurrency limits. When full, requests **wait in queue** rather than being rejected
+- **API tokens** — Per-client tokens with optional concurrency limits and model access control. Clients only see and use models they're authorized for
+- **API key authentication** — Optional proxy-level auth key (or per-client tokens)
 - **Environment variable expansion** — Use `${VAR}` in config to inject secrets from environment
 
 ## Quick Start
@@ -93,6 +94,24 @@ Create a `config.json` (path configurable via `CONFIG_PATH` env var):
         "X-Model-Tier": "premium"
       }
     }
+  ],
+  "tokens": [
+    {
+      "token": "${ADMIN_TOKEN}",
+      "name": "admin"
+    },
+    {
+      "token": "${CHATBOT_TOKEN}",
+      "name": "chatbot",
+      "maxConcurrent": 3,
+      "allowedModels": ["gpt-4o", "gpt-4o-mini"]
+    },
+    {
+      "token": "${INTERNAL_CLI_TOKEN}",
+      "name": "internal-cli",
+      "maxConcurrent": 1,
+      "allowedModels": ["gpt-4o"]
+    }
   ]
 }
 ```
@@ -106,6 +125,7 @@ Create a `config.json` (path configurable via `CONFIG_PATH` env var):
 | `globalMaxConcurrent` | `number` | Max in-flight requests across all models (default: 10) |
 | `providers` | `Provider[]` | Upstream API providers |
 | `models` | `ModelRoute[]` | Model alias → provider mappings |
+| `tokens` | `Token[]?` | Per-client API tokens with optional concurrency limits and model access control |
 
 #### Provider
 
@@ -130,11 +150,20 @@ Create a `config.json` (path configurable via `CONFIG_PATH` env var):
 | `maxConcurrent` | `number?` | Per-model concurrency limit (overrides provider-level) |
 | `headers` | `Record<string, string>?` | Extra headers sent when routing to this model |
 
+#### Token
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `token` | `string` | The token string clients send via `Authorization: Bearer <token>` |
+| `name` | `string` | Human-readable name for this token |
+| `maxConcurrent` | `number?` | Per-token concurrency limit. Requests queue when full (never rejected) |
+| `allowedModels` | `string[]?` | If set, this token can only access these model aliases. Unset/empty = all models |
+
 ## API Endpoints
 
 ### `GET /v1/models`
 
-Returns all configured model aliases in OpenAI format.
+Returns all configured model aliases in OpenAI format. If the request is authenticated with a token that has `allowedModels` configured, only the allowed models are returned.
 
 ```json
 {
@@ -171,6 +200,10 @@ Returns server health and concurrency stats.
     "models": {
       "gpt-4o": { "active": 2, "queued": 0 },
       "claude-sonnet": { "active": 1, "queued": 1 }
+    },
+    "tokens": {
+      "chatbot": { "active": 2, "queued": 0 },
+      "internal-cli": { "active": 1, "queued": 1 }
     }
   }
 }
@@ -196,14 +229,17 @@ The proxy automatically handles format translation when the client format differ
 
 ## Concurrency Model
 
-The proxy implements a two-level concurrency limiter:
+The proxy implements a three-level concurrency limiter:
 
 1. **Global limit** (`globalMaxConcurrent`): max total in-flight requests
 2. **Per-model limit** (`maxConcurrent` on each model route): max concurrent requests per model
+3. **Per-token limit** (`maxConcurrent` on each token): max concurrent requests per client token
 
-When limits are reached, new requests **wait in a FIFO queue** — they are never rejected (HTTP 429). As in-flight requests complete, queued requests are resumed in order.
+When any limit is reached, new requests **wait in a FIFO queue** — they are never rejected (HTTP 429). As in-flight requests complete, queued requests are resumed in order.
 
-The `/health` endpoint shows current active and queued counts.
+Acquire order: token → model → global (prevents starvation under contention).
+
+The `/health` endpoint shows current active and queued counts for all three levels.
 
 ## Development
 
