@@ -1,0 +1,62 @@
+{
+  "port": 3000,
+  "authKey": "${PROXY_AUTH_KEY}",
+  "globalMaxConcurrent": 20,
+  "providers": [
+    {
+      "id": "openai-main",
+      "name": "OpenAI",
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKey": "${OPENAI_API_KEY}",
+      "format": "openai",
+      "timeout": 60000
+    },
+    {
+      "id": "anthropic-main",
+      "name": "Anthropic",
+      "baseUrl": "https://api.anthropic.com/v1",
+      "apiKey": "${ANTHROPIC_API_KEY}",
+      "format": "anthropic",
+      "apiVersion": "2023-06-01",
+      "timeout": 60000
+    },
+    {
+      "id": "custom-llama",
+      "name": "Custom Llama Server",
+      "baseUrl": "https://llama.example.com/v1",
+      "apiKey": "${LLAMA_API_KEY}",
+      "format": "openai",
+      "timeout": 120000,
+      "headers": {
+        "X-Custom-Header": "my-value"
+      }
+    }
+  ],
+  "models": [
+    {
+      "alias": "gpt-4o",
+      "providerId": "openai-main",
+      "upstreamModel": "gpt-4o",
+      "maxConcurrent": 5
+    },
+    {
+      "alias": "gpt-4o-mini",
+      "providerId": "openai-main",
+      "upstreamModel": "gpt-4o-mini"
+    },
+    {
+      "alias": "claude-sonnet",
+      "providerId": "anthropic-main",
+      "upstreamModel": "claude-3-5-sonnet-20241022",
+      "maxConcurrent": 3
+    },
+    {
+      "alias": "llama-3.3-70b",
+      "providerId": "custom-llama",
+      "upstreamModel": "llama-3.3-70b-instruct",
+      "headers": {
+        "X-Model-Tier": "premium"
+      }
+    }
+  ]
+}
