@@ -73,7 +73,7 @@ describe('Security: response header filtering', () => {
         { alias: 'gpt-4o', providerId: 'openai', upstreamModel: 'gpt-4o' },
       ],
     }));
-    app = await createServer(configPath);
+    app = (await createServer(configPath)).app;
     await app.ready();
   });
 
@@ -143,7 +143,7 @@ describe('Security: error message does not leak token name', () => {
         { token: 'tok-restricted', name: 'my-secret-client', allowedModels: ['gpt-4o'] },
       ],
     }));
-    app = await createServer(configPath);
+    app = (await createServer(configPath)).app;
     await app.ready();
   });
 
@@ -191,7 +191,7 @@ describe('Security: input validation', () => {
         { alias: 'gpt-4o', providerId: 'openai', upstreamModel: 'gpt-4o' },
       ],
     }));
-    app = await createServer(configPath);
+    app = (await createServer(configPath)).app;
     await app.ready();
   });
 
@@ -249,7 +249,7 @@ describe('Security: non-JSON upstream response handling', () => {
         { alias: 'gpt-4o', providerId: 'openai', upstreamModel: 'gpt-4o' },
       ],
     }));
-    app = await createServer(configPath);
+    app = (await createServer(configPath)).app;
     await app.ready();
   });
 

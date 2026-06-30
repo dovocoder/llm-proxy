@@ -6,7 +6,7 @@ import type { ProxyConfig } from '../types/index.js';
 const providerSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
-  baseUrl: z.string().url(),
+  baseUrl: z.string().url().refine((url) => url.startsWith('https://'), 'baseUrl must use HTTPS'),
   apiKey: z.string().min(1),
   format: z.enum(['openai', 'anthropic']),
   apiVersion: z.string().optional(),
@@ -41,13 +41,35 @@ export const proxyConfigSchema = z.object({
 
 /**
  * Load and validate proxy configuration from a JSON file.
- * Environment variables in the form ${VAR} are expanded.
+ * Environment variables in the form ${VAR} are expanded on individual string
+ * values after JSON parsing, preventing raw-text injection.
  */
 export function loadConfig(path: string): ProxyConfig {
   const raw = readFileSync(resolve(path), 'utf-8');
-  const expanded = expandEnvVars(raw);
-  const parsed = JSON.parse(expanded) as unknown;
-  return proxyConfigSchema.parse(parsed) as ProxyConfig;
+  const parsed = JSON.parse(raw) as unknown;
+  const expanded = expandEnvInObject(parsed);
+  return proxyConfigSchema.parse(expanded) as ProxyConfig;
+}
+
+/**
+ * Recursively expand ${VAR} patterns in all string values of an object.
+ * This avoids the injection risk of expanding on raw JSON text.
+ */
+function expandEnvInObject(obj: unknown): unknown {
+  if (typeof obj === 'string') {
+    return expandEnvVars(obj);
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(expandEnvInObject);
+  }
+  if (obj !== null && typeof obj === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      result[key] = expandEnvInObject(value);
+    }
+    return result;
+  }
+  return obj;
 }
 
 /** Replace ${VAR} patterns with process.env[VAR] or empty string. */

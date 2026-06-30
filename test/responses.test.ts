@@ -88,7 +88,7 @@ describe('Responses API', () => {
           { alias: 'gpt-4o', providerId: 'openai', upstreamModel: 'gpt-4o' },
         ],
       }));
-      app = await createServer(configPath);
+      app = (await createServer(configPath)).app;
       await app.ready();
     });
 
@@ -185,7 +185,7 @@ describe('Responses API', () => {
           { alias: 'claude-sonnet', providerId: 'anthropic', upstreamModel: 'claude-3-5-sonnet-20241022' },
         ],
       }));
-      app = await createServer(configPath);
+      app = (await createServer(configPath)).app;
       await app.ready();
     });
 
@@ -258,7 +258,7 @@ describe('Responses API', () => {
           { alias: 'gpt-4o', providerId: 'openai', upstreamModel: 'gpt-4o' },
         ],
       }));
-      app = await createServer(configPath);
+      app = (await createServer(configPath)).app;
       await app.ready();
     });
 
@@ -311,7 +311,7 @@ describe('Responses API', () => {
           { alias: 'gpt-4o', providerId: 'openai', upstreamModel: 'gpt-4o' },
         ],
       }));
-      app = await createServer(configPath);
+      app = (await createServer(configPath)).app;
       await app.ready();
     });
 
@@ -379,7 +379,7 @@ describe('Responses API', () => {
           { alias: 'gpt-4o', providerId: 'openai', upstreamModel: 'gpt-4o' },
         ],
       }));
-      app = await createServer(configPath);
+      app = (await createServer(configPath)).app;
       await app.ready();
     });
 

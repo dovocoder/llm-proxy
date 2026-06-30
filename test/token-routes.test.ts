@@ -68,7 +68,7 @@ describe('API tokens', () => {
       ],
     }));
 
-    app = await createServer(configPath);
+    app = (await createServer(configPath)).app;
     await app.ready();
   });
 
@@ -232,7 +232,7 @@ describe('API tokens', () => {
 
   // ─── Per-token concurrency ─────────────────────────────────────────
 
-  it('health endpoint shows token concurrency stats', async () => {
+  it('health endpoint shows token concurrency stats for admin tokens', async () => {
     // Need a token that has been used at least once to create the queue.
     mockFetch.mockResolvedValueOnce(mockOpenAIResponse('OK'));
 
@@ -249,6 +249,7 @@ describe('API tokens', () => {
       },
     });
 
+    // Admin token sees full stats.
     const res = await app.inject({
       method: 'GET',
       url: '/health',
@@ -259,5 +260,21 @@ describe('API tokens', () => {
     const body = JSON.parse(res.body);
     expect(body.concurrency.tokens).toBeDefined();
     expect(body.concurrency.tokens['restricted-client']).toBeDefined();
+  });
+
+  it('health endpoint hides token/model names from restricted tokens', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/health',
+      headers: { authorization: 'Bearer tok-limited' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    // Should only see aggregate counts.
+    expect(body.concurrency.globalActive).toBeDefined();
+    expect(body.concurrency.globalQueued).toBeDefined();
+    expect(body.concurrency.tokens).toBeUndefined();
+    expect(body.concurrency.models).toBeUndefined();
   });
 });

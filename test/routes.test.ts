@@ -35,7 +35,7 @@ describe('API routes', () => {
       ],
     }));
 
-    app = await createServer(configPath);
+    app = (await createServer(configPath)).app;
     await app.ready();
   });
 
@@ -283,7 +283,7 @@ describe('API routes', () => {
       ],
     }));
 
-    const authApp = await createServer(authConfigPath);
+    const authApp = (await createServer(authConfigPath)).app;
     await authApp.ready();
 
     const res = await authApp.inject({

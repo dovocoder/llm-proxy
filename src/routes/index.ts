@@ -14,10 +14,16 @@ export interface RouteContext {
   tokenManager: TokenManager;
 }
 
-/** Extract bearer token from Authorization header. */
+/** Extract bearer token from Authorization header (case-insensitive scheme). */
 function extractBearerToken(request: FastifyRequest): string | undefined {
   const auth = request.headers.authorization;
-  return auth?.startsWith('Bearer ') ? auth.slice(7) : undefined;
+  if (!auth) return undefined;
+  // RFC 7235: auth scheme is case-insensitive.
+  const lower = auth.toLowerCase();
+  if (lower.startsWith('bearer ')) {
+    return auth.slice(7); // Slice from original to preserve token case.
+  }
+  return undefined;
 }
 
 /** Authentication hook — validates tokens via TokenManager. */
@@ -38,6 +44,7 @@ function authHook(ctx: RouteContext) {
       await reply.status(401).send({
         error: { message: 'Invalid API key', type: 'authentication_error' },
       });
+      return;
     }
   };
 }
@@ -112,6 +119,26 @@ function validateMessages(messages: unknown): boolean {
   return true;
 }
 
+/** Sanitize upstream error responses — only forward safe fields. */
+function sanitizeUpstreamError(body: unknown): unknown {
+  if (body !== null && typeof body === 'object' && 'error' in body) {
+    const err = (body as { error: Record<string, unknown> }).error;
+    return {
+      error: {
+        message: typeof err.message === 'string' ? err.message : 'Upstream error',
+        type: typeof err.type === 'string' ? err.type : 'upstream_error',
+      },
+    };
+  }
+  // If the error body doesn't have an error field, wrap it.
+  return {
+    error: {
+      message: 'Upstream provider error',
+      type: 'upstream_error',
+    },
+  };
+}
+
 /** Build all API routes. */
 export function buildRoutes(app: FastifyInstance, ctx: RouteContext): void {
   app.addHook('onRequest', authHook(ctx));
@@ -170,7 +197,8 @@ export function buildRoutes(app: FastifyInstance, ctx: RouteContext): void {
 
     try {
       const result = await adapter.forwardOpenAI(upstreamBody, modelRoute.headers);
-      return reply.status(result.status).send(result.body);
+      const body = result.status >= 400 ? sanitizeUpstreamError(result.body) : result.body;
+      return reply.status(result.status).send(body);
     } catch (err) {
       if (err instanceof QueueFullError) {
         return reply.status(503).send({
@@ -218,7 +246,8 @@ export function buildRoutes(app: FastifyInstance, ctx: RouteContext): void {
 
     try {
       const result = await adapter.forwardAnthropic(upstreamBody, modelRoute.headers);
-      return reply.status(result.status).send(result.body);
+      const body = result.status >= 400 ? sanitizeUpstreamError(result.body) : result.body;
+      return reply.status(result.status).send(body);
     } catch (err) {
       if (err instanceof QueueFullError) {
         return reply.status(503).send({
@@ -266,7 +295,8 @@ export function buildRoutes(app: FastifyInstance, ctx: RouteContext): void {
 
     try {
       const result = await adapter.forwardResponses(upstreamBody, modelRoute.headers);
-      return reply.status(result.status).send(result.body);
+      const body = result.status >= 400 ? sanitizeUpstreamError(result.body) : result.body;
+      return reply.status(result.status).send(body);
     } catch (err) {
       if (err instanceof QueueFullError) {
         return reply.status(503).send({
@@ -284,8 +314,26 @@ export function buildRoutes(app: FastifyInstance, ctx: RouteContext): void {
 
   // ─── GET /health ─────────────────────────────────────────────────────
 
-  app.get('/health', async (_req: FastifyRequest, reply: FastifyReply) => {
+  app.get('/health', async (request: FastifyRequest, reply: FastifyReply) => {
     const stats = ctx.concurrency.stats();
-    return reply.send({ status: 'ok', concurrency: stats });
+    const tokenConfig = getRequestToken(ctx, request);
+
+    // Non-admin tokens only see aggregate counts, not model/token names.
+    const isAdmin = !tokenConfig || (
+      (!tokenConfig.allowedModels || tokenConfig.allowedModels.length === 0)
+    );
+
+    if (isAdmin) {
+      return reply.send({ status: 'ok', concurrency: stats });
+    }
+
+    // Restricted tokens only see aggregate counts.
+    return reply.send({
+      status: 'ok',
+      concurrency: {
+        globalActive: stats.globalActive,
+        globalQueued: stats.globalQueued,
+      },
+    });
   });
 }

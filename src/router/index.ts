@@ -25,7 +25,7 @@ export class Router {
     const route = this.modelMap.get(modelAlias);
     if (!route) {
       throw new RouteError(
-        `Model "${modelAlias}" not found. Available models: ${Array.from(this.modelMap.keys()).join(', ')}`,
+        `Model "${modelAlias}" not found`,
       );
     }
 
@@ -67,7 +67,7 @@ export class RouterWithProviders {
     const route = this.modelMap.get(modelAlias);
     if (!route) {
       throw new RouteError(
-        `Model "${modelAlias}" not found. Available models: ${Array.from(this.modelMap.keys()).join(', ')}`,
+        `Model "${modelAlias}" not found`,
       );
     }
 

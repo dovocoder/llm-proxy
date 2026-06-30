@@ -6,7 +6,7 @@ import { ConcurrencyManager, type SimpleLogger } from './queue/concurrency.js';
 import { TokenManager } from './auth/token-manager.js';
 import { buildRoutes, type RouteContext } from './routes/index.js';
 
-export async function createServer(configPath: string): Promise<FastifyInstance> {
+export async function createServer(configPath: string): Promise<{ app: FastifyInstance; port: number }> {
   const config = loadConfig(configPath);
 
   const app = Fastify({
@@ -17,7 +17,12 @@ export async function createServer(configPath: string): Promise<FastifyInstance>
     bodyLimit: 10 * 1024 * 1024,
   });
 
-  await app.register(cors, { origin: true });
+  // CORS: only allow configured origins, or disable if none set.
+  const corsOrigins = process.env.CORS_ORIGINS;
+  const corsOpts = corsOrigins
+    ? { origin: corsOrigins.split(',').map((s) => s.trim()) }
+    : { origin: false }; // No CORS — API server, not browser-facing.
+  await app.register(cors, corsOpts);
 
   const ctx: RouteContext = {
     config,
@@ -31,18 +36,17 @@ export async function createServer(configPath: string): Promise<FastifyInstance>
 
   buildRoutes(app, ctx);
 
-  return app;
+  return { app, port: config.port };
 }
 
 export async function start(): Promise<void> {
   const configPath = process.env.CONFIG_PATH ?? './config.json';
-  const app = await createServer(configPath);
+  const { app, port } = await createServer(configPath);
   const log = app.log as unknown as SimpleLogger;
 
   try {
-    const configData = loadConfig(configPath);
-    await app.listen({ port: configData.port, host: '0.0.0.0' });
-    log?.info({ port: configData.port }, 'LLM Proxy started');
+    await app.listen({ port, host: '0.0.0.0' });
+    log?.info({ port }, 'LLM Proxy started');
   } catch (err) {
     log?.error({ err: err as Error }, 'Failed to start server');
     process.exit(1);
