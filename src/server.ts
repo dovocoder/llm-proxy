@@ -13,6 +13,8 @@ export async function createServer(configPath: string): Promise<FastifyInstance>
     logger: {
       level: process.env.LOG_LEVEL ?? 'info',
     },
+    // Limit request body to 10MB to prevent DoS via oversized payloads.
+    bodyLimit: 10 * 1024 * 1024,
   });
 
   await app.register(cors, { origin: true });

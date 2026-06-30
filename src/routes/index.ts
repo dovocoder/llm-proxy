@@ -1,10 +1,11 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { RouterWithProviders } from '../router/index.js';
-import { ConcurrencyManager, type SimpleLogger } from '../queue/concurrency.js';
+import { ConcurrencyManager, QueueFullError, type SimpleLogger } from '../queue/concurrency.js';
 import { ProviderAdapter } from '../providers/adapter.js';
 import { TokenManager } from '../auth/token-manager.js';
 import type { ApiTokenConfig, ProxyConfig } from '../types/index.js';
 import type { AnthropicRequest, OpenAIChatRequest } from '../providers/converters.js';
+import type { ResponsesRequest } from '../providers/responses-converters.js';
 
 export interface RouteContext {
   config: ProxyConfig;
@@ -58,7 +59,7 @@ async function resolveModel(
       if (tokenConfig && !ctx.tokenManager.canAccessModel(tokenConfig, modelAlias)) {
         await reply.status(403).send({
           error: {
-            message: `Token "${tokenConfig.name}" is not allowed to access model "${modelAlias}"`,
+            message: `Access denied for model "${modelAlias}"`,
             type: 'forbidden_error',
           },
         });
@@ -83,6 +84,32 @@ function getRequestToken(ctx: RouteContext, request: FastifyRequest): ApiTokenCo
   const rawToken = extractBearerToken(request);
   if (!rawToken) return null;
   return ctx.tokenManager.authenticate(rawToken);
+}
+
+/** Maximum length for a model alias name (prevents abuse). */
+const MAX_MODEL_NAME_LENGTH = 200;
+
+/** Maximum number of messages in a single request (prevents abuse). */
+const MAX_MESSAGES_COUNT = 1000;
+
+/** Validate model name to prevent injection. */
+function validateModelName(model: unknown): string | null {
+  if (typeof model !== 'string' || model.length === 0 || model.length > MAX_MODEL_NAME_LENGTH) {
+    return null;
+  }
+  // Allow only alphanumeric, hyphens, underscores, dots, and colons.
+  if (!/^[a-zA-Z0-9._\-:]+$/.test(model)) {
+    return null;
+  }
+  return model;
+}
+
+/** Validate messages array bounds. */
+function validateMessages(messages: unknown): boolean {
+  if (!Array.isArray(messages) || messages.length === 0 || messages.length > MAX_MESSAGES_COUNT) {
+    return false;
+  }
+  return true;
 }
 
 /** Build all API routes. */
@@ -115,13 +142,14 @@ export function buildRoutes(app: FastifyInstance, ctx: RouteContext): void {
   app.post('/v1/chat/completions', async (request: FastifyRequest, reply: FastifyReply) => {
     const body = request.body as OpenAIChatRequest;
 
-    if (!body?.model || !body?.messages) {
+    const model = validateModelName(body?.model);
+    if (!model || !validateMessages(body?.messages)) {
       return reply.status(400).send({
-        error: { message: 'Missing required fields: model, messages', type: 'invalid_request_error' },
+        error: { message: 'Missing or invalid required fields: model, messages', type: 'invalid_request_error' },
       });
     }
 
-    const result = await resolveModel(ctx, request, reply, body.model);
+    const result = await resolveModel(ctx, request, reply, model);
     if (!result) return;
 
     const { provider, modelRoute } = result.resolved;
@@ -144,6 +172,11 @@ export function buildRoutes(app: FastifyInstance, ctx: RouteContext): void {
       const result = await adapter.forwardOpenAI(upstreamBody, modelRoute.headers);
       return reply.status(result.status).send(result.body);
     } catch (err) {
+      if (err instanceof QueueFullError) {
+        return reply.status(503).send({
+          error: { message: 'Server at capacity, please retry later', type: 'server_busy' },
+        });
+      }
       log?.error({ err: err as Error }, 'Upstream forwarding failed');
       return reply.status(502).send({
         error: { message: 'Upstream provider error', type: 'upstream_error' },
@@ -158,13 +191,14 @@ export function buildRoutes(app: FastifyInstance, ctx: RouteContext): void {
   app.post('/v1/messages', async (request: FastifyRequest, reply: FastifyReply) => {
     const body = request.body as AnthropicRequest;
 
-    if (!body?.model || !body?.messages) {
+    const model = validateModelName(body?.model);
+    if (!model || !validateMessages(body?.messages)) {
       return reply.status(400).send({
-        error: { message: 'Missing required fields: model, messages', type: 'invalid_request_error' },
+        error: { message: 'Missing or invalid required fields: model, messages', type: 'invalid_request_error' },
       });
     }
 
-    const result = await resolveModel(ctx, request, reply, body.model);
+    const result = await resolveModel(ctx, request, reply, model);
     if (!result) return;
 
     const { provider, modelRoute } = result.resolved;
@@ -186,6 +220,59 @@ export function buildRoutes(app: FastifyInstance, ctx: RouteContext): void {
       const result = await adapter.forwardAnthropic(upstreamBody, modelRoute.headers);
       return reply.status(result.status).send(result.body);
     } catch (err) {
+      if (err instanceof QueueFullError) {
+        return reply.status(503).send({
+          error: { message: 'Server at capacity, please retry later', type: 'server_busy' },
+        });
+      }
+      log?.error({ err: err as Error }, 'Upstream forwarding failed');
+      return reply.status(502).send({
+        error: { message: 'Upstream provider error', type: 'upstream_error' },
+      });
+    } finally {
+      release();
+    }
+  });
+
+  // ─── POST /v1/responses (OpenAI Responses API) ──────────────────────
+
+  app.post('/v1/responses', async (request: FastifyRequest, reply: FastifyReply) => {
+    const body = request.body as ResponsesRequest;
+
+    const model = validateModelName(body?.model);
+    if (!model || body?.input === undefined) {
+      return reply.status(400).send({
+        error: { message: 'Missing or invalid required fields: model, input', type: 'invalid_request_error' },
+      });
+    }
+
+    const result = await resolveModel(ctx, request, reply, model);
+    if (!result) return;
+
+    const { provider, modelRoute } = result.resolved;
+    const log = request.log as unknown as SimpleLogger;
+    const adapter = new ProviderAdapter(provider, log);
+    const tokenConfig = getRequestToken(ctx, request);
+
+    // Replace model alias with upstream model name.
+    const upstreamBody: ResponsesRequest = { ...body, model: modelRoute.upstreamModel };
+
+    const release = await ctx.concurrency.acquire(
+      modelRoute.alias,
+      modelRoute.maxConcurrent,
+      tokenConfig?.name,
+      tokenConfig?.maxConcurrent,
+    );
+
+    try {
+      const result = await adapter.forwardResponses(upstreamBody, modelRoute.headers);
+      return reply.status(result.status).send(result.body);
+    } catch (err) {
+      if (err instanceof QueueFullError) {
+        return reply.status(503).send({
+          error: { message: 'Server at capacity, please retry later', type: 'server_busy' },
+        });
+      }
       log?.error({ err: err as Error }, 'Upstream forwarding failed');
       return reply.status(502).send({
         error: { message: 'Upstream provider error', type: 'upstream_error' },

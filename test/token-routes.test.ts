@@ -171,7 +171,6 @@ describe('API tokens', () => {
     expect(res.statusCode).toBe(403);
     const body = JSON.parse(res.body);
     expect(body.error.type).toBe('forbidden_error');
-    expect(body.error.message).toContain('restricted-client');
     expect(body.error.message).toContain('claude-sonnet');
   });
 

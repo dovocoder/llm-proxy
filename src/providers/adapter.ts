@@ -8,6 +8,13 @@ import {
   type OpenAIChatRequest,
   type OpenAIChatResponse,
 } from './converters.js';
+import {
+  responsesToChatCompletions,
+  chatCompletionsToResponses,
+  responsesToAnthropic,
+  anthropicToResponses,
+  type ResponsesRequest,
+} from './responses-converters.js';
 
 export interface ForwardResult {
   status: number;
@@ -71,6 +78,38 @@ export class ProviderAdapter {
   }
 
   /**
+   * Forward a Responses API request.
+   *
+   * If the provider supports Responses natively (supportsResponses flag),
+   * forward as-is. Otherwise, fall back to chat/completions (OpenAI) or
+   * messages (Anthropic) and convert the response back to Responses format.
+   */
+  async forwardResponses(body: ResponsesRequest, extraHeaders?: Record<string, string>): Promise<ForwardResult> {
+    // If provider supports Responses API natively, forward directly.
+    if (this.provider.supportsResponses === true) {
+      return this.forwardNative('/responses', body, extraHeaders);
+    }
+
+    // Fallback: convert to the provider's native format.
+    if (this.provider.format === 'openai') {
+      const chatReq = responsesToChatCompletions(body);
+      const result = await this.forwardNative('/chat/completions', chatReq, extraHeaders);
+      if (result.status >= 400) return result;
+      const chatRes = result.body as OpenAIChatResponse;
+      const responsesRes = chatCompletionsToResponses(chatRes, body.model);
+      return { status: result.status, body: responsesRes, headers: result.headers };
+    }
+
+    // Anthropic fallback: convert Responses → Anthropic Messages, then convert response back.
+    const anthropicReq = responsesToAnthropic(body);
+    const result = await this.forwardNative('/messages', anthropicReq, extraHeaders);
+    if (result.status >= 400) return result;
+    const anthropicRes = result.body as AnthropicResponse;
+    const responsesRes = anthropicToResponses(anthropicRes, body.model);
+    return { status: result.status, body: responsesRes, headers: result.headers };
+  }
+
+  /**
    * Forward a request natively (no conversion) to the upstream provider.
    */
   private async forwardNative(
@@ -107,12 +146,45 @@ export class ProviderAdapter {
         signal: controller.signal,
       });
 
+      // Only forward a safe subset of response headers to the client.
+      // Prevents leaking upstream infrastructure details (server info, internal IDs, etc.)
       const responseHeaders: Record<string, string> = {};
+      const safeResponseHeaders = new Set([
+        'content-type',
+        'x-request-id',
+        'openai-organization',
+        'openai-processing-ms',
+        'anthropic-ratelimit-requests-limit',
+        'anthropic-ratelimit-requests-remaining',
+        'anthropic-ratelimit-tokens-limit',
+        'anthropic-ratelimit-tokens-remaining',
+        'x-ratelimit-limit-requests',
+        'x-ratelimit-limit-tokens',
+        'x-ratelimit-remaining-requests',
+        'x-ratelimit-remaining-tokens',
+        'x-ratelimit-reset-requests',
+        'x-ratelimit-reset-tokens',
+      ]);
       res.headers.forEach((value, key) => {
-        responseHeaders[key] = value;
+        if (safeResponseHeaders.has(key.toLowerCase())) {
+          responseHeaders[key] = value;
+        }
       });
 
-      const resBody = await res.json().catch(() => ({}));
+      // Safely parse upstream response — handle non-JSON responses gracefully.
+      let resBody: unknown;
+      try {
+        resBody = await res.json();
+      } catch {
+        // Upstream returned non-JSON (HTML error page, plain text, etc.)
+        resBody = {
+          error: {
+            message: 'Upstream returned non-JSON response',
+            type: 'upstream_error',
+            status: res.status,
+          },
+        };
+      }
 
       return {
         status: res.status,
@@ -195,3 +267,4 @@ function openAIToAnthropicResponse(res: OpenAIChatResponse): AnthropicResponse {
 
 export { openAIToAnthropic, anthropicToOpenAI };
 export type { AnthropicRequest, AnthropicResponse, OpenAIChatRequest, OpenAIChatResponse };
+export type { ResponsesRequest, ResponsesResponse } from './responses-converters.js';

@@ -9,7 +9,8 @@
       "baseUrl": "https://api.openai.com/v1",
       "apiKey": "${OPENAI_API_KEY}",
       "format": "openai",
-      "timeout": 60000
+      "timeout": 60000,
+      "supportsResponses": true
     },
     {
       "id": "anthropic-main",

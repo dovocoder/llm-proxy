@@ -23,6 +23,8 @@ export interface ProviderConfig {
   timeout?: number;
   /** Static headers sent with every request to this provider. */
   headers?: Record<string, string>;
+  /** Whether this provider supports the OpenAI Responses API (/v1/responses). Default: false. */
+  supportsResponses?: boolean;
 }
 
 /** A model alias — the name clients send, mapped to an upstream model. */

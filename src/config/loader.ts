@@ -12,6 +12,7 @@ const providerSchema = z.object({
   apiVersion: z.string().optional(),
   timeout: z.number().int().positive().default(30000),
   headers: z.record(z.string()).optional(),
+  supportsResponses: z.boolean().default(false),
 });
 
 const modelRouteSchema = z.object({

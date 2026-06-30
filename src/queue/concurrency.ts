@@ -9,11 +9,25 @@ export type SimpleLogger = {
   error(obj: unknown, msg?: string): void;
 } | undefined;
 
+/** Maximum queued requests per concurrency limiter before rejecting (DoS protection). */
+const MAX_QUEUE_SIZE = 1000;
+
+/** Error thrown when the concurrency queue is full. */
+export class QueueFullError extends Error {
+  constructor(label: string) {
+    super(`Concurrency queue full for ${label}`);
+    this.name = 'QueueFullError';
+  }
+}
+
 /**
  * Concurrency limiter with queueing — requests wait, never rejected.
  *
  * When the concurrency limit is reached, new requests are queued in FIFO order
  * and resumed as slots free up. This applies to both per-model and global limits.
+ *
+ * To prevent memory exhaustion DoS, the queue is capped at MAX_QUEUE_SIZE.
+ * If the queue is full, the request is rejected with a 503 error.
  */
 export class ConcurrencyQueue {
   private active = 0;
@@ -37,12 +51,17 @@ export class ConcurrencyQueue {
 
   /**
    * Acquire a slot. If the limit is reached, this waits until a slot frees.
-   * Never rejects — always resolves eventually.
+   * Rejects with QueueFullError if the queue is full (DoS protection).
    */
   async acquire(): Promise<void> {
     if (this.active < this.limit) {
       this.active++;
       return;
+    }
+
+    // Reject if queue is full to prevent memory exhaustion.
+    if (this.waitQueue.length >= MAX_QUEUE_SIZE) {
+      throw new QueueFullError(this.label);
     }
 
     // Queue this request — it will resolve when a slot frees.
@@ -80,8 +99,8 @@ export class ConcurrencyQueue {
 }
 
 /**
- * Manages per-model and global concurrency queues.
- * A request must pass through both global and model-level limits.
+ * Manages per-model, per-token, and global concurrency queues.
+ * A request must pass through all applicable limits.
  */
 export class ConcurrencyManager {
   private globalQueue: ConcurrencyQueue;

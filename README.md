@@ -9,6 +9,8 @@ A self-hosted LLM API proxy that unifies access to multiple upstream providers (
 - **Cross-format translation** — Automatically converts between OpenAI and Anthropic API formats:
   - Send OpenAI `POST /v1/chat/completions` requests to an Anthropic provider
   - Send Anthropic `POST /v1/messages` requests to an OpenAI provider
+  - Send `POST /v1/responses` requests to any provider (converted to chat/completions or messages if not natively supported)
+- **Responses API** — OpenAI's `POST /v1/responses` endpoint with automatic fallback to chat/completions or Anthropic messages when the provider doesn't support it natively
 - **Custom headers** — Attach per-provider and per-model headers for custom model endpoints
 - **Concurrency limits with queueing** — Set global, per-model, and per-token concurrency limits. When full, requests **wait in queue** rather than being rejected
 - **API tokens** — Per-client tokens with optional concurrency limits and model access control. Clients only see and use models they're authorized for
@@ -139,6 +141,7 @@ Create a `config.json` (path configurable via `CONFIG_PATH` env var):
 | `apiVersion` | `string?` | API version header (Anthropic only, default: `2023-06-01`) |
 | `timeout` | `number?` | Request timeout in ms (default: 30000) |
 | `headers` | `Record<string, string>?` | Static headers sent with every request to this provider |
+| `supportsResponses` | `boolean?` | Whether the provider supports `POST /v1/responses` natively (default: `false`). If `false`, Responses API requests are automatically converted to chat/completions or messages format |
 
 #### Model Route
 
@@ -187,6 +190,28 @@ Anthropic-format messages API. Forwards to the provider mapped by the `model` fi
 
 If the provider uses OpenAI format, the request and response are automatically converted.
 
+### `POST /v1/responses`
+
+OpenAI Responses API. Forwards to the provider mapped by the `model` field.
+
+If the provider supports the Responses API natively (`supportsResponses: true` in config), the request is forwarded as-is. Otherwise, the request is automatically converted:
+- **OpenAI providers** → `POST /chat/completions` and the response is converted back to Responses format
+- **Anthropic providers** → `POST /messages` and the response is converted back to Responses format
+
+**Request format:**
+
+```json
+{
+  "model": "gpt-4o",
+  "input": "Tell me a joke",
+  "instructions": "You are a comedian.",
+  "max_output_tokens": 1000,
+  "temperature": 0.7
+}
+```
+
+The `input` field can be a string or an array of message objects with `role` and `content`.
+
 ### `GET /health`
 
 Returns server health and concurrency stats.
@@ -219,6 +244,9 @@ The proxy automatically handles format translation when the client format differ
 | `/v1/chat/completions` | `anthropic` | Convert request → Anthropic, convert response → OpenAI |
 | `/v1/messages` | `anthropic` | Forward as-is |
 | `/v1/messages` | `openai` | Convert request → OpenAI, convert response → Anthropic |
+| `/v1/responses` | `openai` (`supportsResponses: true`) | Forward as-is to `/responses` |
+| `/v1/responses` | `openai` (`supportsResponses: false`) | Convert to `/chat/completions`, convert response → Responses |
+| `/v1/responses` | `anthropic` | Convert to `/messages`, convert response → Responses |
 
 ### Conversion details
 
